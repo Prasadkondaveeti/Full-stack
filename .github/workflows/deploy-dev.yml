@@ -1,0 +1,109 @@
+name: 🚀 Deploy DEV
+
+on:
+  push:
+    branches:
+      - develop   # Push to develop → deploys to DEV EC2
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1: Build & Deploy FRONTEND to DEV EC2
+  # ─────────────────────────────────────────────
+  deploy-frontend-dev:
+    name: 🎨 Frontend → DEV EC2
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: ⬇️ Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 🔨 Build for DEVELOPMENT
+        run: npm run build:dev
+        env:
+          VITE_API_URL: ${{ secrets.DEV_BACKEND_URL }}
+          VITE_APP_ENV: development
+          VITE_APP_TITLE: MyApp (Dev)
+
+      - name: 🔐 Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEV_EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.DEV_EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: 📤 Upload build to DEV EC2
+        run: |
+          rsync -avz --delete dist/ \
+            ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }}:/var/www/frontend/
+
+      - name: 🔁 Reload Nginx on DEV EC2
+        run: |
+          ssh ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }} \
+            "sudo systemctl reload nginx"
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Build & Deploy BACKEND to DEV EC2
+  # ─────────────────────────────────────────────
+  deploy-backend-dev:
+    name: ⚙️ Backend → DEV EC2
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: ⬇️ Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 🔨 Compile TypeScript
+        run: npm run build
+
+      - name: 🔐 Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEV_EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.DEV_EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: 📤 Upload compiled backend to DEV EC2
+        run: |
+          rsync -avz --delete \
+            dist/ package.json package-lock.json \
+            ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }}:/var/www/backend/
+
+      - name: 📦 Install prod dependencies on DEV EC2
+        run: |
+          ssh ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }} \
+            "cd /var/www/backend && npm ci --omit=dev"
+
+      - name: 🔁 Restart backend on DEV EC2 (PM2)
+        run: |
+          ssh ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }} \
+            "cd /var/www/backend && NODE_ENV=development pm2 restart backend-dev || pm2 start dist/index.js --name backend-dev --env development"
+
+      - name: 💾 Save PM2 process list
+        run: |
+          ssh ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }} "pm2 save"
