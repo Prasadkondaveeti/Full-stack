@@ -71,6 +71,9 @@ jobs:
       - name: 🔨 Compile TypeScript
         run: npm run build
 
+      - name: ✅ Verify dist exists
+        run: ls -la dist/
+
       - name: 🔐 Setup SSH key
         run: |
           mkdir -p ~/.ssh
@@ -78,10 +81,16 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.DEV_EC2_HOST }} >> ~/.ssh/known_hosts
 
+      - name: 📁 Prepare backend directory on EC2
+        run: |
+          ssh ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }} \
+            "mkdir -p /var/www/backend/dist"
+
       - name: 📤 Upload compiled backend to DEV EC2
         run: |
-          rsync -avz --delete \
-            dist/ package.json \
+          rsync -avz --delete dist/ \
+            ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }}:/var/www/backend/dist/
+          rsync -avz package.json \
             ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }}:/var/www/backend/
 
       - name: 📦 Install prod dependencies on DEV EC2
@@ -89,11 +98,14 @@ jobs:
           ssh ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }} \
             "cd /var/www/backend && npm install --omit=dev"
 
-      - name: 🔁 Restart backend on DEV EC2 (PM2)
+      - name: 🔁 Start or Restart backend on DEV EC2 (PM2)
         run: |
-          ssh ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }} \
-            "cd /var/www/backend && NODE_ENV=development pm2 restart backend-dev || pm2 start dist/index.js --name backend-dev"
-
-      - name: 💾 Save PM2 process list
-        run: |
-          ssh ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }} "pm2 save"
+          ssh ${{ secrets.DEV_EC2_USER }}@${{ secrets.DEV_EC2_HOST }} "
+            cd /var/www/backend
+            if pm2 describe backend-dev > /dev/null 2>&1; then
+              pm2 restart backend-dev --update-env
+            else
+              NODE_ENV=development pm2 start dist/index.js --name backend-dev
+            fi
+            pm2 save
+          "
